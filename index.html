@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Love Run - A Romantic 2-Player Game</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Welcome Screen -->
+        <div id="welcome-screen" class="screen active">
+            <h1>Love Run</h1>
+            <p class="tagline">Race for love with your special someone ❤️</p>
+            <div class="buttons">
+                <button id="create-room-btn" class="btn primary-btn">Create Room</button>
+                <button id="join-room-btn" class="btn secondary-btn">Join Room</button>
+            </div>
+        </div>
+
+        <!-- Create Room Screen -->
+        <div id="create-room-screen" class="screen">
+            <h2>Create a Room</h2>
+            <form id="create-room-form">
+                <div class="form-group">
+                    <label for="host-name">Your Name</label>
+                    <input type="text" id="host-name" required>
+                </div>
+                <div class="form-group">
+                    <label>Select Gender</label>
+                    <div class="radio-group">
+                        <label>
+                            <input type="radio" name="host-gender" value="male" checked>
+                            <span>Male</span>
+                        </label>
+                        <label>
+                            <input type="radio" name="host-gender" value="female">
+                            <span>Female</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Player Type</label>
+                    <div class="radio-group">
+                        <label>
+                            <input type="radio" name="host-player-type" value="real" checked>
+                            <span>Real Player</span>
+                        </label>
+                        <label>
+                            <input type="radio" name="host-player-type" value="phantom">
+                            <span>Phantom (Shadow)</span>
+                        </label>
+                    </div>
+                </div>
+                <button type="submit" class="btn primary-btn">Create Room</button>
+                <button type="button" class="btn back-btn">Back</button>
+            </form>
+        </div>
+
+        <!-- Room Created Screen -->
+        <div id="room-created-screen" class="screen">
+            <h2>Room Created!</h2>
+            <div class="room-info">
+                <p>Your room code: <span id="room-code" class="highlight"></span></p>
+                <p>Share this link with your partner:</p>
+                <div class="share-link-container">
+                    <input type="text" id="share-link" readonly>
+                    <button id="copy-link-btn" class="btn small-btn">Copy</button>
+                </div>
+            </div>
+            <p class="waiting-text">Waiting for your partner to join...</p>
+            <div class="loader"></div>
+        </div>
+
+        <!-- Join Room Screen -->
+        <div id="join-room-screen" class="screen">
+            <h2>Join a Room</h2>
+            <form id="join-room-form">
+                <div class="form-group">
+                    <label for="guest-name">Your Name</label>
+                    <input type="text" id="guest-name" required>
+                </div>
+                <div class="form-group">
+                    <label>Select Gender</label>
+                    <div class="radio-group">
+                        <label>
+                            <input type="radio" name="guest-gender" value="male" checked>
+                            <span>Male</span>
+                        </label>
+                        <label>
+                            <input type="radio" name="guest-gender" value="female">
+                            <span>Female</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="room-code-input">Room Code</label>
+                    <input type="text" id="room-code-input" placeholder="Enter room code" required>
+                </div>
+                <button type="submit" class="btn primary-btn">Join Room</button>
+                <button type="button" class="btn back-btn">Back</button>
+            </form>
+        </div>
+
+        <!-- Game Screen -->
+        <div id="game-screen" class="screen">
+            <div class="game-header">
+                <div id="partner-info">You are playing with <span id="partner-name"></span> ❤️</div>
+                <div id="game-feedback"></div>
+                <div id="timer">Time: <span id="time-left">60</span>s</div>
+            </div>
+            <div id="game-container">
+                <canvas id="game-canvas"></canvas>
+            </div>
+        </div>
+
+        <!-- Results Screen -->
+        <div id="results-screen" class="screen">
+            <h2>Game Over!</h2>
+            <div class="results-container">
+                <p class="love-score">Love Compatibility: <span id="compatibility-score"></span>% 💞</p>
+                <p id="result-message"></p>
+                <div class="player-scores">
+                    <div class="player-score">
+                        <span id="player1-name"></span>: <span id="player1-score"></span> hearts
+                    </div>
+                    <div class="player-score">
+                        <span id="player2-name"></span>: <span id="player2-score"></span> hearts
+                    </div>
+                </div>
+            </div>
+            <div class="buttons">
+                <button id="share-results-btn" class="btn primary-btn">Share Results</button>
+                <button id="play-again-btn" class="btn secondary-btn">Play Again</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="game.js"></script>
+    <script src="connection.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
