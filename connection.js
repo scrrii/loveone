@@ -16,7 +16,7 @@ class GameConnection {
         this.hostPlayerType = null;
         this.pingInterval = null;
         this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 3;
+        this.maxReconnectAttempts = 8;
         this.isReconnecting = false;
         this.manualDisconnect = false;
         this.callbacks = {
@@ -29,65 +29,307 @@ class GameConnection {
             onReconnectFailed: null
         };
     }
-
     /**
      * Initialize PeerJS connection with a random ID
+     * @param {function} [callback] - Optional callback function to be called after initialization
      */
-    initializePeer() {
-        this.initializePeerWithId(null);
+    initializePeer(callback) {
+        this.initializePeerWithId(null, callback);
     }
     
     /**
      * Initialize PeerJS connection with a specific ID
      * @param {string|null} id - Peer ID to use (null for random ID)
+     * @param {function} [callback] - Optional callback function to be called after initialization
      */
-    initializePeerWithId(id) {
-        // Create a new Peer with the specified ID or random if null
-        this.peer = new Peer(id, {
-            debug: 2,
-            // Use PeerJS public server for signaling
-            host: 'peerjs-server.herokuapp.com',
-            secure: true,
-            port: 443,
-            // Add both STUN and TURN servers for NAT traversal
-            config: {
-                'iceServers': [
-                    // STUN servers
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' },
-                    { urls: 'stun:stun2.l.google.com:19302' },
-                    { urls: 'stun:stun3.l.google.com:19302' },
-                    { urls: 'stun:stun4.l.google.com:19302' },
-                    // Free TURN servers (with credentials)
-                    {
-                        urls: 'turn:numb.viagenie.ca',
-                        credential: 'muazkh',
-                        username: 'webrtc@live.com'
-                    },
-                    {
-                        urls: 'turn:turn.anyfirewall.com:443?transport=tcp',
-                        credential: 'webrtc',
-                        username: 'webrtc'
+    initializePeerWithId(id, callback) {
+        // Destroy any existing peer connection
+        if (this.peer) {
+            try {
+                this.peer.destroy();
+            } catch (e) {
+                console.error('Error destroying existing peer:', e);
+            }
+            this.peer = null;
+        }
+        
+        // Clear any existing peer open timeout
+        if (this.peerOpenTimeout) {
+            clearTimeout(this.peerOpenTimeout);
+            this.peerOpenTimeout = null;
+        }
+        
+        try {
+            // Create a new Peer with the specified ID or random if null
+            console.log('Creating new PeerJS instance...');
+            this.peer = new Peer(id, {
+                debug: 2,
+                // Use reliable PeerJS server for signaling
+                host: 'peerjs-server.herokuapp.com',
+                secure: true,
+                port: 443,
+                path: '/',
+                // Add extensive STUN and TURN servers for better NAT traversal
+                config: {
+                    'iceServers': [
+                        // STUN servers (Google)
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' },
+                        { urls: 'stun:stun2.l.google.com:19302' },
+                        { urls: 'stun:stun3.l.google.com:19302' },
+                        { urls: 'stun:stun4.l.google.com:19302' },
+                        // Additional STUN servers
+                        { urls: 'stun:stun.stunprotocol.org:3478' },
+                        { urls: 'stun:stun.voiparound.com' },
+                        { urls: 'stun:stun.voipbuster.com' },
+                        { urls: 'stun:stun.voipstunt.com' },
+                        { urls: 'stun:stun.voxgratia.org' },
+                        // Free TURN servers (with credentials)
+                        {
+                            urls: 'turn:numb.viagenie.ca',
+                            credential: 'muazkh',
+                            username: 'webrtc@live.com'
+                        },
+                        {
+                            urls: 'turn:turn.anyfirewall.com:443?transport=tcp',
+                            credential: 'webrtc',
+                            username: 'webrtc'
+                        },
+                        // Additional TURN servers
+                        {
+                            urls: 'turn:openrelay.metered.ca:80',
+                            username: 'openrelayproject',
+                            credential: 'openrelayproject'
+                        },
+                        {
+                            urls: 'turn:openrelay.metered.ca:443',
+                            username: 'openrelayproject',
+                            credential: 'openrelayproject'
+                        },
+                        {
+                            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                            username: 'openrelayproject',
+                            credential: 'openrelayproject'
+                        }
+                    ],
+                    'iceTransportPolicy': 'all',
+                    'sdpSemantics': 'unified-plan'
+                },
+                // Set higher timeout for connections
+                pingInterval: 5000,
+                retryTimes: 5
+            });
+            
+            // Set a timeout for the peer to open
+            this.peerOpenTimeout = setTimeout(() => {
+                console.error('Peer failed to initialize within timeout period');
+                const timeoutError = new Error('Failed to connect to signaling server - please try again');
+                
+                if (callback) {
+                    callback(timeoutError);
+                }
+                
+                if (this.callbacks.onConnectionError) {
+                    this.callbacks.onConnectionError(timeoutError);
+                }
+            }, 15000); // 15 second timeout for peer initialization
+            
+            // Log peer creation
+            console.log('Initializing peer with ID:', id || 'random');
+            
+            // Use one-time event handlers to prevent multiple handlers
+            const onPeerOpen = (peerId) => {
+                console.log('My peer ID is: ' + peerId);
+                
+                // Clear the timeout since we're connected
+                if (this.peerOpenTimeout) {
+                    clearTimeout(this.peerOpenTimeout);
+                    this.peerOpenTimeout = null;
+                }
+                
+                // Call the callback with no error
+                if (callback) callback(null);
+            };
+            
+            this.peer.on('open', onPeerOpen);
+            
+            // connectToPeer method is defined outside of this scope
+            
+            /**
+             * Connect to a peer using their ID
+             * @param {string} peerId - The ID of the peer to connect to
+             * @param {function} callback - Callback function to be called after connection attempt
+             */
+            this.connectToPeer = function(peerId, callback) {
+                console.log('Connecting to peer:', peerId);
+                
+                // Reset connection state
+                this.manualDisconnect = false;
+                this.reconnectAttempts = 0;
+                this.isReconnecting = false;
+                
+                // Clear any existing connection timeout
+                if (this.connectionTimeout) {
+                    clearTimeout(this.connectionTimeout);
+                    this.connectionTimeout = null;
+                }
+                
+                // Set a timeout for the connection attempt
+                this.connectionTimeout = setTimeout(() => {
+                    console.error('Connection attempt timed out after 20 seconds');
+                    if (callback) callback(new Error('Connection timed out - peer may be offline or behind restrictive firewall'));
+                }, 20000); // 20 second timeout (increased from 15)
+                
+                try {
+                    // Connect to the peer with enhanced metadata
+                    const conn = this.peer.connect(peerId, {
+                        reliable: true,
+                        serialization: 'json',
+                        metadata: {
+                            type: 'game-connection',
+                            timestamp: Date.now(),
+                            reconnect: this.isReconnecting,
+                            attempt: this.reconnectAttempts
+                        }
+                    });
+                    
+                    // Handle connection opening
+                    conn.on('open', () => {
+                        console.log('Connection established successfully');
+                        clearTimeout(this.connectionTimeout);
+                        this.connectionTimeout = null;
+                        
+                        // Setup connection listeners
+                        this.setupConnectionListeners(conn);
+                        
+                        // Send guest info to host
+                        if (!this.isHost) {
+                            this.sendData({
+                                type: 'guest-info',
+                                name: this.guestName,
+                                gender: this.guestGender,
+                                reconnected: this.isReconnecting
+                            });
+                        }
+                        
+                        // Call the callback with no error
+                        if (callback) callback(null);
+                        
+                        // Notify that connection is established
+                        if (this.callbacks.onConnectionEstablished) {
+                            this.callbacks.onConnectionEstablished(this.isReconnecting);
+                        }
+                    });
+                    
+                    // Handle connection errors
+                    conn.on('error', (err) => {
+                        console.error('Error connecting to peer:', err);
+                        clearTimeout(this.connectionTimeout);
+                        this.connectionTimeout = null;
+                        
+                        // Provide more specific error messages based on the error type
+                        let errorMessage = 'Connection error';
+                        if (err.type === 'peer-unavailable') {
+                            errorMessage = 'The room code is invalid or the host has left';
+                        } else if (err.type === 'network') {
+                            errorMessage = 'Network error - check your internet connection';
+                        } else if (err.type === 'server-error') {
+                            errorMessage = 'Server error - the signaling server may be down';
+                        } else if (err.type === 'browser-incompatible') {
+                            errorMessage = 'Your browser may not support WebRTC connections';
+                        }
+                        
+                        const enhancedError = new Error(errorMessage);
+                        enhancedError.originalError = err;
+                        
+                        if (callback) callback(enhancedError);
+                    });
+                    
+                    // Handle unexpected issues
+                    conn.on('close', () => {
+                        console.warn('Connection closed during connection attempt');
+                        if (this.connectionTimeout) {
+                            clearTimeout(this.connectionTimeout);
+                            this.connectionTimeout = null;
+                            if (callback) callback(new Error('Connection closed unexpectedly during setup'));
+                        }
+                    });
+                } catch (err) {
+                    console.error('Exception during peer.connect():', err);
+                    clearTimeout(this.connectionTimeout);
+                    this.connectionTimeout = null;
+                    if (callback) callback(new Error('Failed to create connection: ' + err.message));
+                }
+            };
+
+
+            this.peer.on('error', (err) => {
+                console.error('Peer connection error:', err);
+                
+                // Clear the timeout since we got a response (even if it's an error)
+                if (this.peerOpenTimeout) {
+                    clearTimeout(this.peerOpenTimeout);
+                    this.peerOpenTimeout = null;
+                }
+                
+                // Provide more specific error messages based on the error type
+                let errorMessage = 'Connection error';
+                if (err.type === 'peer-unavailable') {
+                    errorMessage = 'The room code is invalid or the host has left';
+                } else if (err.type === 'network') {
+                    errorMessage = 'Network error - check your internet connection';
+                } else if (err.type === 'server-error') {
+                    errorMessage = 'Server error - the signaling server may be down';
+                } else if (err.type === 'browser-incompatible') {
+                    errorMessage = 'Your browser may not support WebRTC connections';
+                } else if (err.type === 'socket-error') {
+                    errorMessage = 'Socket error - there may be a firewall blocking connections';
+                } else if (err.type === 'socket-closed') {
+                    errorMessage = 'Connection to signaling server was closed';
+                }
+                
+                const enhancedError = new Error(errorMessage);
+                enhancedError.originalError = err;
+                
+                if (this.callbacks.onConnectionError) {
+                    this.callbacks.onConnectionError(enhancedError);
+                }
+            });
+
+            // Handle incoming connections (for host)
+            this.peer.on('connection', (conn) => {
+                this.handleIncomingConnection(conn);
+            });
+            
+            // Handle peer disconnection from signaling server
+            this.peer.on('disconnected', () => {
+                console.log('Peer disconnected from signaling server');
+                
+                // Try to reconnect to the signaling server
+                setTimeout(() => {
+                    if (this.peer && !this.peer.destroyed) {
+                        console.log('Attempting to reconnect to signaling server...');
+                        this.peer.reconnect();
                     }
-                ]
-            }
-        });
-
-        this.peer.on('open', (id) => {
-            console.log('My peer ID is: ' + id);
-        });
-
-        this.peer.on('error', (err) => {
-            console.error('Peer connection error:', err);
+                }, 3000); // Try sooner (3 seconds)
+            });
+            
+            // Handle peer destruction
+            this.peer.on('close', () => {
+                console.log('Peer connection closed');
+                this.peer = null;
+                
+                // Only trigger error if not manually disconnected
+                if (!this.manualDisconnect && this.callbacks.onConnectionError) {
+                    this.callbacks.onConnectionError(new Error('Connection to signaling server was closed'));
+                }
+            });
+        } catch (err) {
+            console.error('Exception during peer creation:', err);
             if (this.callbacks.onConnectionError) {
-                this.callbacks.onConnectionError(err);
+                this.callbacks.onConnectionError(new Error('Failed to initialize connection: ' + err.message));
             }
-        });
-
-        // Handle incoming connections (for host)
-        this.peer.on('connection', (conn) => {
-            this.handleIncomingConnection(conn);
-        });
+        }
     }
 
     /**
@@ -144,12 +386,26 @@ class GameConnection {
         this.guestName = guestName;
         this.guestGender = guestGender;
         
-        // Reset manual disconnect flag when attempting to join
+        // Reset connection state
         this.manualDisconnect = false;
+        this.reconnectAttempts = 0;
+        this.isReconnecting = false;
+        
+        console.log('Joining room:', roomCode, 'as', guestName);
+
+        // Clear any existing connection timeout
+        if (this.connectionTimeout) {
+            clearTimeout(this.connectionTimeout);
+            this.connectionTimeout = null;
+        }
 
         // Destroy any existing peer
         if (this.peer) {
-            this.peer.destroy();
+            try {
+                this.peer.destroy();
+            } catch (e) {
+                console.error('Error destroying existing peer:', e);
+            }
             // Reinitialize peer with random ID
             this.initializePeer();
         }
@@ -158,67 +414,161 @@ class GameConnection {
         const connectToPeer = () => {
             console.log('Attempting to connect to room:', roomCode);
             
-            // Connect to the host peer
-            const conn = this.peer.connect(roomCode, {
-                reliable: true,
-                metadata: {
-                    name: guestName,
-                    gender: guestGender
-                }
-            });
-
-            conn.on('open', () => {
-                this.connection = conn;
-                console.log('Connected to host!');
-                
-                // Send guest info to host
-                this.sendData({
-                    type: 'guest-info',
-                    name: guestName,
-                    gender: guestGender
+            try {
+                // Connect to the host peer with more options for reliability
+                const conn = this.peer.connect(roomCode, {
+                    reliable: true,
+                    serialization: 'json',
+                    metadata: {
+                        name: guestName,
+                        gender: guestGender,
+                        timestamp: Date.now(),
+                        type: 'game-connection',
+                        reconnect: this.isReconnecting,
+                        attempt: this.reconnectAttempts
+                    }
                 });
 
-                if (this.callbacks.onConnectionEstablished) {
-                    this.callbacks.onConnectionEstablished({
-                        isHost: false,
-                        hostName: null, // Will be set when host sends data
-                        guestName: guestName
-                    });
-                }
-            });
+                // Set connection timeout - longer timeout for better reliability
+                this.connectionTimeout = setTimeout(() => {
+                    if (!this.connection || !this.connection.open) {
+                        console.error('Connection timeout after 20 seconds');
+                        
+                        // Try to close the connection if it exists
+                        if (conn) {
+                            try {
+                                conn.close();
+                            } catch (e) {
+                                console.error('Error closing timed-out connection:', e);
+                            }
+                        }
+                        
+                        if (this.callbacks.onConnectionError) {
+                            this.callbacks.onConnectionError(new Error('Connection timed out - host may be offline or behind restrictive firewall'));
+                        }
+                    }
+                }, 20000); // 20 seconds timeout
 
-            // Handle connection failure
-            conn.on('error', (err) => {
-                console.error('Connection error in joinRoom:', err);
+                conn.on('open', () => {
+                    // Clear the timeout since connection succeeded
+                    if (this.connectionTimeout) {
+                        clearTimeout(this.connectionTimeout);
+                        this.connectionTimeout = null;
+                    }
+                    
+                    this.connection = conn;
+                    console.log('Connected to host successfully!');
+                    
+                    // Setup connection listeners
+                    this.setupConnectionListeners(conn);
+                    
+                    // Send guest info to host
+                    this.sendData({
+                        type: 'guest-info',
+                        name: guestName,
+                        gender: guestGender,
+                        reconnected: this.isReconnecting,
+                        timestamp: Date.now()
+                    });
+
+                    // Notify that connection is established
+                    if (this.callbacks.onConnectionEstablished) {
+                        this.callbacks.onConnectionEstablished(this.isReconnecting);
+                    }
+                });
+
+                // Handle connection failure
+                conn.on('error', (err) => {
+                    // Clear the timeout since we got an error response
+                    if (this.connectionTimeout) {
+                        clearTimeout(this.connectionTimeout);
+                        this.connectionTimeout = null;
+                    }
+                    
+                    console.error('Connection error in joinRoom:', err);
+                    
+                    // Provide more detailed error information
+                    let errorMessage = 'Connection error';
+                    if (err.type === 'peer-unavailable') {
+                        errorMessage = 'The room code is invalid or the host has left';
+                    } else if (err.type === 'network') {
+                        errorMessage = 'Network error - check your internet connection';
+                    } else if (err.type === 'server-error') {
+                        errorMessage = 'Server error - the signaling server may be down';
+                    } else if (err.type === 'browser-incompatible') {
+                        errorMessage = 'Your browser may not support WebRTC connections';
+                    }
+                    
+                    const enhancedError = new Error(errorMessage);
+                    enhancedError.originalError = err;
+                    
+                    if (this.callbacks.onConnectionError) {
+                        this.callbacks.onConnectionError(enhancedError);
+                    }
+                });
+
+                // Handle unexpected issues
+                conn.on('close', () => {
+                    console.warn('Connection closed during connection attempt');
+                    if (this.connectionTimeout) {
+                        clearTimeout(this.connectionTimeout);
+                        this.connectionTimeout = null;
+                        if (this.callbacks.onConnectionError) {
+                            this.callbacks.onConnectionError(new Error('Connection closed unexpectedly during setup'));
+                        }
+                    }
+                });
+            } catch (err) {
+                console.error('Exception during peer.connect():', err);
+                if (this.connectionTimeout) {
+                    clearTimeout(this.connectionTimeout);
+                    this.connectionTimeout = null;
+                }
                 if (this.callbacks.onConnectionError) {
-                    this.callbacks.onConnectionError({
-                        message: `Could not connect to peer ${roomCode}. The room may not exist or the host may have disconnected.`
-                    });
+                    this.callbacks.onConnectionError(new Error('Failed to create connection: ' + err.message));
                 }
-            });
-
-            this.setupConnectionListeners(conn);
+            }
         };
 
         // If peer is already open, connect immediately
-        if (this.peer.open) {
+        if (this.peer && this.peer.open) {
             connectToPeer();
-        } else {
-            // Otherwise wait for peer to open
-            this.peer.on('open', () => {
-                connectToPeer();
-            });
-        }
-        
-        // Set a timeout for connection attempts
-        setTimeout(() => {
-            if (!this.connection || !this.connection.open) {
-                console.error('Connection timeout');
+        } else if (this.peer) {
+            // Otherwise wait for peer to open with timeout
+            const peerOpenTimeout = setTimeout(() => {
+                console.error('Peer open timeout');
                 if (this.callbacks.onConnectionError) {
-                    this.callbacks.onConnectionError(new Error('Connection timeout. The host may not be available.'));
+                    this.callbacks.onConnectionError(new Error('Failed to initialize connection. Please check your internet connection and try again.'));
                 }
+            }, 15000); // 15 seconds timeout for peer to open
+            
+            // One-time open event handler
+            const onPeerOpen = () => {
+                clearTimeout(peerOpenTimeout);
+                this.peer.off('open', onPeerOpen);
+                this.peer.off('error', onPeerError);
+                connectToPeer();
+            };
+            
+            // One-time error event handler
+            const onPeerError = (err) => {
+                clearTimeout(peerOpenTimeout);
+                this.peer.off('open', onPeerOpen);
+                this.peer.off('error', onPeerError);
+                console.error('Peer initialization error:', err);
+                if (this.callbacks.onConnectionError) {
+                    this.callbacks.onConnectionError(new Error('Failed to initialize connection: ' + (err.message || 'Unknown error')));
+                }
+            };
+            
+            this.peer.on('open', onPeerOpen);
+            this.peer.on('error', onPeerError);
+        } else {
+            console.error('No peer object available');
+            if (this.callbacks.onConnectionError) {
+                this.callbacks.onConnectionError(new Error('Internal error: Failed to initialize connection system.'));
             }
-        }, 15000); // 15 seconds timeout
+        }
     }
 
     /**
@@ -241,11 +591,9 @@ class GameConnection {
             });
 
             if (this.callbacks.onConnectionEstablished) {
-                this.callbacks.onConnectionEstablished({
-                    isHost: true,
-                    hostName: this.hostName,
-                    guestName: null // Will be set when guest sends data
-                });
+                // Check if this is a reconnection based on metadata
+                const isReconnect = conn.metadata && conn.metadata.reconnect;
+                this.callbacks.onConnectionEstablished(isReconnect);
             }
         });
 
@@ -260,32 +608,139 @@ class GameConnection {
         // Store the connection object
         this.connection = conn;
         
-        // Set up a ping interval to keep the connection alive
+        // Track last received message time for connection health monitoring
+        this.lastMessageTime = Date.now();
+        this.lastPingSent = 0;
+        this.lastPingReceived = 0;
+        this.pingHistory = [];
+        this.pingSequence = 0;
+        this.connectionHealthy = true;
+        
+        // Clear any existing ping interval
+        if (this.pingInterval) {
+            clearInterval(this.pingInterval);
+            this.pingInterval = null;
+        }
+        
+        // Clear any existing health check interval
+        if (this.healthCheckInterval) {
+            clearInterval(this.healthCheckInterval);
+            this.healthCheckInterval = null;
+        }
+        
+        // Set up a more frequent ping interval to keep the connection alive
         this.pingInterval = setInterval(() => {
             if (this.connection && this.connection.open) {
-                this.sendData({
-                    type: 'ping',
-                    timestamp: Date.now()
-                });
+                try {
+                    const now = Date.now();
+                    this.lastPingSent = now;
+                    this.sendData({
+                        type: 'ping',
+                        timestamp: now,
+                        sequence: this.pingSequence++
+                    });
+                } catch (e) {
+                    console.error('Error sending ping:', e);
+                    this.connectionHealthy = false;
+                }
             }
-        }, 30000); // Send ping every 30 seconds
+        }, 10000); // Send ping every 10 seconds (more frequent than before)
+        
+        // Set up a health check interval to detect stale connections
+        this.healthCheckInterval = setInterval(() => {
+            const now = Date.now();
+            const timeSinceLastMessage = now - this.lastMessageTime;
+            
+            // If no message received in 40 seconds, connection might be stale
+            if (timeSinceLastMessage > 40000) {
+                console.warn('Connection may be stale. Last message received', timeSinceLastMessage/1000, 'seconds ago');
+                this.connectionHealthy = false;
+                
+                // Try to send a health check ping
+                try {
+                    this.sendData({
+                        type: 'health_check',
+                        timestamp: now
+                    });
+                    
+                    // If still no response after 10 more seconds, trigger reconnection
+                    setTimeout(() => {
+                        const newTimeSinceLastMessage = Date.now() - this.lastMessageTime;
+                        if (newTimeSinceLastMessage > 50000) { // No message for 50+ seconds
+                            console.error('Connection is stale, forcing reconnection');
+                            // Force close and reconnect
+                            if (this.connection) {
+                                try {
+                                    this.connection.close();
+                                } catch (e) {
+                                    console.error('Error closing stale connection:', e);
+                                }
+                                this.connection = null;
+                                this.attemptReconnect(new Error('Connection timeout - no response to health check'));
+                            }
+                        }
+                    }, 10000); // Reduced from 15 to 10 seconds for faster recovery
+                } catch (e) {
+                    console.error('Error sending health check:', e);
+                    // Connection is definitely broken, try to reconnect
+                    if (this.connection) {
+                        try {
+                            this.connection.close();
+                        } catch (e) {
+                            console.error('Error closing broken connection:', e);
+                        }
+                        this.connection = null;
+                        this.attemptReconnect(new Error('Connection broken - cannot send health check'));
+                    }
+                }
+            }
+        }, 20000); // Check health every 20 seconds (more frequent than before)
         
         conn.on('data', (data) => {
+            // Update last message time for health monitoring
+            this.lastMessageTime = Date.now();
+            this.connectionHealthy = true;
+            
             console.log('Received data:', data);
             
             // Handle different types of data
             if (data.type === 'ping') {
-                // Respond to ping with pong
+                // Respond to ping with pong immediately
                 this.sendData({
                     type: 'pong',
-                    timestamp: data.timestamp
+                    timestamp: data.timestamp,
+                    sequence: data.sequence,
+                    received_at: Date.now()
                 });
                 return; // Don't process pings further
             } else if (data.type === 'pong') {
                 // Calculate latency
                 const latency = Date.now() - data.timestamp;
-                console.log('Connection latency:', latency + 'ms');
+                this.lastPingReceived = Date.now();
+                
+                // Store ping history (keep last 5 pings)
+                this.pingHistory.push(latency);
+                if (this.pingHistory.length > 5) {
+                    this.pingHistory.shift();
+                }
+                
+                // Calculate average ping
+                const avgPing = this.pingHistory.reduce((sum, ping) => sum + ping, 0) / this.pingHistory.length;
+                console.log('Connection latency:', latency + 'ms (avg: ' + Math.round(avgPing) + 'ms)');
                 return; // Don't process pongs further
+            } else if (data.type === 'health_check') {
+                // Respond to health check immediately with high priority
+                this.sendData({
+                    type: 'health_response',
+                    timestamp: data.timestamp,
+                    received_at: Date.now()
+                });
+                return; // Don't process health checks further
+            } else if (data.type === 'health_response') {
+                // Calculate round trip time
+                const rtt = Date.now() - data.timestamp;
+                console.log('Health check RTT:', rtt + 'ms');
+                return; // Don't process health responses further
             } else if (data.type === 'guest-info' && this.isHost) {
                 this.guestName = data.name;
                 this.guestGender = data.gender;
@@ -302,15 +757,12 @@ class GameConnection {
 
         conn.on('close', () => {
             console.log('Connection closed');
-            // Clear ping interval
-            if (this.pingInterval) {
-                clearInterval(this.pingInterval);
-                this.pingInterval = null;
-            }
+            // Clear intervals
+            this.clearConnectionIntervals();
             
             // Attempt to reconnect if not manually closed
             if (!this.manualDisconnect) {
-                this.attemptReconnect();
+                this.attemptReconnect(new Error('Connection closed unexpectedly'));
             } else {
                 if (this.callbacks.onConnectionClosed) {
                     this.callbacks.onConnectionClosed();
@@ -320,15 +772,27 @@ class GameConnection {
 
         conn.on('error', (err) => {
             console.error('Connection error:', err);
-            // Clear ping interval
-            if (this.pingInterval) {
-                clearInterval(this.pingInterval);
-                this.pingInterval = null;
-            }
+            // Clear intervals
+            this.clearConnectionIntervals();
             
             // Attempt to reconnect on error
             this.attemptReconnect(err);
         });
+    }
+    
+    /**
+     * Clear all connection-related intervals
+     */
+    clearConnectionIntervals() {
+        if (this.pingInterval) {
+            clearInterval(this.pingInterval);
+            this.pingInterval = null;
+        }
+        
+        if (this.healthCheckInterval) {
+            clearInterval(this.healthCheckInterval);
+            this.healthCheckInterval = null;
+        }
     }
 
     /**
@@ -458,9 +922,18 @@ class GameConnection {
      */
     attemptReconnect(error) {
         // If already reconnecting, don't start another attempt
-        if (this.isReconnecting) {
+        if (this.isReconnecting || this.manualDisconnect) {
             return;
         }
+        
+        // Clear any existing reconnect timeout
+        if (this.reconnectTimeout) {
+            clearTimeout(this.reconnectTimeout);
+            this.reconnectTimeout = null;
+        }
+        
+        // Clear any existing connection intervals
+        this.clearConnectionIntervals();
         
         this.isReconnecting = true;
         this.reconnectAttempts++;
@@ -492,32 +965,89 @@ class GameConnection {
             return;
         }
         
-        // Wait before attempting to reconnect (exponential backoff)
-        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 10000);
+        // Wait before attempting to reconnect (exponential backoff with jitter)
+        const baseDelay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts - 1), 10000);
+        const jitter = Math.random() * 1000; // Add up to 1 second of random jitter
+        const delay = baseDelay + jitter;
         
-        setTimeout(() => {
+        console.log(`Waiting ${Math.round(delay/1000)} seconds before reconnection attempt...`);
+        
+        this.reconnectTimeout = setTimeout(() => {
             console.log('Attempting to reconnect...');
             
             // Reinitialize peer if needed
             if (!this.peer || this.peer.destroyed) {
+                console.log('Recreating peer for reconnection...');
                 this.initializePeer();
+                
+                // Wait for peer to initialize before continuing
+                const peerInitTimeout = setTimeout(() => {
+                    if (!this.peer || !this.peer.open) {
+                        console.error('Peer failed to initialize during reconnection');
+                        this.isReconnecting = false;
+                        this.attemptReconnect(new Error('Failed to initialize peer during reconnection'));
+                    }
+                }, 5000);
+                
+                // One-time open event handler for peer initialization
+                const onPeerOpen = () => {
+                    clearTimeout(peerInitTimeout);
+                    this.peer.off('open', onPeerOpen);
+                    this._continueReconnection(error);
+                };
+                
+                this.peer.on('open', onPeerOpen);
+                return;
             }
             
-            // Attempt to reconnect based on role
-            if (this.isHost) {
-                // Host just needs to wait for new connections
+            this._continueReconnection(error);
+        }, delay);
+    }
+    
+    /**
+     * Continue the reconnection process after peer initialization
+     * @private
+     * @param {Error} [error] - The original error that caused reconnection
+     */
+    _continueReconnection(error) {
+        // Attempt to reconnect based on role
+        if (this.isHost) {
+            console.log('Host waiting for guest to reconnect...');
+            // Host just needs to wait for new connections
+            
+            // Set a timeout to give up waiting after a while
+            const hostWaitTimeout = setTimeout(() => {
                 this.isReconnecting = false;
-                
-                // Reset reconnect attempts if successful
-                if (this.callbacks.onReconnected) {
-                    this.callbacks.onReconnected();
+                console.error('Host gave up waiting for guest reconnection after timeout');
+                if (this.callbacks.onReconnectFailed) {
+                    this.callbacks.onReconnectFailed(new Error('Reconnection timeout - guest did not reconnect'));
                 }
-            } else {
-                // Guest needs to reconnect to the host
+                if (this.callbacks.onConnectionClosed) {
+                    this.callbacks.onConnectionClosed();
+                }
+            }, 60000); // Wait for 1 minute
+            
+            this.reconnectTimeout = hostWaitTimeout;
+        } else {
+            // Guest needs to reconnect to the host
+            console.log('Guest attempting to reconnect to host:', this.roomCode);
+            
+            // Try to join the room again with more reliable error handling
+            try {
                 this.joinRoom(this.roomCode, this.guestName, this.guestGender);
+                
+                // Set a timeout for this specific reconnection attempt
+                const attemptTimeout = setTimeout(() => {
+                    console.error('Reconnection attempt timed out');
+                    this.isReconnecting = false;
+                    this.attemptReconnect(new Error('Reconnection attempt timed out'));
+                }, 25000); // 25 second timeout for each attempt (increased from 20)
                 
                 // Check if connection was established after a short delay
                 setTimeout(() => {
+                    // Clear the attempt timeout since we got a response
+                    clearTimeout(attemptTimeout);
+                    
                     if (this.isConnected()) {
                         console.log('Reconnection successful');
                         this.isReconnecting = false;
@@ -529,11 +1059,19 @@ class GameConnection {
                     } else {
                         console.log('Reconnection failed, trying again');
                         this.isReconnecting = false;
-                        this.attemptReconnect();
+                        this.attemptReconnect(new Error('Failed to establish connection'));
                     }
                 }, 5000); // Give 5 seconds to establish connection
+            } catch (err) {
+                console.error('Exception during reconnection attempt:', err);
+                this.isReconnecting = false;
+                
+                // Wait a bit before trying again
+                setTimeout(() => {
+                    this.attemptReconnect(new Error('Exception during reconnection: ' + err.message));
+                }, 3000); // 3 second delay before next attempt
             }
-        }, delay);
+        }
     }
 
     /**
