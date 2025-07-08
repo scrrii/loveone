@@ -14,29 +14,61 @@ class GameConnection {
         this.hostGender = null;
         this.guestGender = null;
         this.hostPlayerType = null;
+        this.pingInterval = null;
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 3;
+        this.isReconnecting = false;
+        this.manualDisconnect = false;
         this.callbacks = {
             onConnectionEstablished: null,
             onDataReceived: null,
             onConnectionClosed: null,
-            onConnectionError: null
+            onConnectionError: null,
+            onReconnecting: null,
+            onReconnected: null,
+            onReconnectFailed: null
         };
     }
 
     /**
-     * Initialize PeerJS connection
+     * Initialize PeerJS connection with a random ID
      */
     initializePeer() {
-        // Create a new Peer with a random ID
-        this.peer = new Peer(null, {
+        this.initializePeerWithId(null);
+    }
+    
+    /**
+     * Initialize PeerJS connection with a specific ID
+     * @param {string|null} id - Peer ID to use (null for random ID)
+     */
+    initializePeerWithId(id) {
+        // Create a new Peer with the specified ID or random if null
+        this.peer = new Peer(id, {
             debug: 2,
-            // Add public STUN servers to help with NAT traversal
+            // Use PeerJS public server for signaling
+            host: 'peerjs-server.herokuapp.com',
+            secure: true,
+            port: 443,
+            // Add both STUN and TURN servers for NAT traversal
             config: {
                 'iceServers': [
+                    // STUN servers
                     { urls: 'stun:stun.l.google.com:19302' },
                     { urls: 'stun:stun1.l.google.com:19302' },
                     { urls: 'stun:stun2.l.google.com:19302' },
                     { urls: 'stun:stun3.l.google.com:19302' },
-                    { urls: 'stun:stun4.l.google.com:19302' }
+                    { urls: 'stun:stun4.l.google.com:19302' },
+                    // Free TURN servers (with credentials)
+                    {
+                        urls: 'turn:numb.viagenie.ca',
+                        credential: 'muazkh',
+                        username: 'webrtc@live.com'
+                    },
+                    {
+                        urls: 'turn:turn.anyfirewall.com:443?transport=tcp',
+                        credential: 'webrtc',
+                        username: 'webrtc'
+                    }
                 ]
             }
         });
@@ -71,8 +103,20 @@ class GameConnection {
         this.hostGender = hostGender;
         this.hostPlayerType = hostPlayerType;
         
+        // Reset manual disconnect flag when creating a room
+        this.manualDisconnect = false;
+        this.reconnectAttempts = 0;
+        
         // Generate a random room code
         this.roomCode = 'LOVE-' + Math.floor(1000 + Math.random() * 9000);
+        
+        // Destroy any existing peer
+        if (this.peer) {
+            this.peer.destroy();
+        }
+        
+        // Create a new peer with the room code as ID
+        this.initializePeerWithId(this.roomCode);
         
         return this.roomCode;
     }
@@ -99,6 +143,16 @@ class GameConnection {
         this.roomCode = roomCode;
         this.guestName = guestName;
         this.guestGender = guestGender;
+        
+        // Reset manual disconnect flag when attempting to join
+        this.manualDisconnect = false;
+
+        // Destroy any existing peer
+        if (this.peer) {
+            this.peer.destroy();
+            // Reinitialize peer with random ID
+            this.initializePeer();
+        }
 
         // Make sure peer is ready before connecting
         const connectToPeer = () => {
@@ -106,7 +160,11 @@ class GameConnection {
             
             // Connect to the host peer
             const conn = this.peer.connect(roomCode, {
-                reliable: true
+                reliable: true,
+                metadata: {
+                    name: guestName,
+                    gender: guestGender
+                }
             });
 
             conn.on('open', () => {
@@ -151,6 +209,16 @@ class GameConnection {
                 connectToPeer();
             });
         }
+        
+        // Set a timeout for connection attempts
+        setTimeout(() => {
+            if (!this.connection || !this.connection.open) {
+                console.error('Connection timeout');
+                if (this.callbacks.onConnectionError) {
+                    this.callbacks.onConnectionError(new Error('Connection timeout. The host may not be available.'));
+                }
+            }
+        }, 15000); // 15 seconds timeout
     }
 
     /**
@@ -189,11 +257,36 @@ class GameConnection {
      * @param {object} conn - PeerJS connection object
      */
     setupConnectionListeners(conn) {
+        // Store the connection object
+        this.connection = conn;
+        
+        // Set up a ping interval to keep the connection alive
+        this.pingInterval = setInterval(() => {
+            if (this.connection && this.connection.open) {
+                this.sendData({
+                    type: 'ping',
+                    timestamp: Date.now()
+                });
+            }
+        }, 30000); // Send ping every 30 seconds
+        
         conn.on('data', (data) => {
             console.log('Received data:', data);
             
             // Handle different types of data
-            if (data.type === 'guest-info' && this.isHost) {
+            if (data.type === 'ping') {
+                // Respond to ping with pong
+                this.sendData({
+                    type: 'pong',
+                    timestamp: data.timestamp
+                });
+                return; // Don't process pings further
+            } else if (data.type === 'pong') {
+                // Calculate latency
+                const latency = Date.now() - data.timestamp;
+                console.log('Connection latency:', latency + 'ms');
+                return; // Don't process pongs further
+            } else if (data.type === 'guest-info' && this.isHost) {
                 this.guestName = data.name;
                 this.guestGender = data.gender;
             } else if (data.type === 'host-info' && !this.isHost) {
@@ -209,16 +302,32 @@ class GameConnection {
 
         conn.on('close', () => {
             console.log('Connection closed');
-            if (this.callbacks.onConnectionClosed) {
-                this.callbacks.onConnectionClosed();
+            // Clear ping interval
+            if (this.pingInterval) {
+                clearInterval(this.pingInterval);
+                this.pingInterval = null;
+            }
+            
+            // Attempt to reconnect if not manually closed
+            if (!this.manualDisconnect) {
+                this.attemptReconnect();
+            } else {
+                if (this.callbacks.onConnectionClosed) {
+                    this.callbacks.onConnectionClosed();
+                }
             }
         });
 
         conn.on('error', (err) => {
             console.error('Connection error:', err);
-            if (this.callbacks.onConnectionError) {
-                this.callbacks.onConnectionError(err);
+            // Clear ping interval
+            if (this.pingInterval) {
+                clearInterval(this.pingInterval);
+                this.pingInterval = null;
             }
+            
+            // Attempt to reconnect on error
+            this.attemptReconnect(err);
         });
     }
 
@@ -290,17 +399,141 @@ class GameConnection {
     onConnectionError(callback) {
         this.callbacks.onConnectionError = callback;
     }
+    
+    /**
+     * Set callback for when reconnection attempt starts
+     * @param {function} callback - Callback function
+     */
+    onReconnecting(callback) {
+        this.callbacks.onReconnecting = callback;
+    }
+    
+    /**
+     * Set callback for when reconnection is successful
+     * @param {function} callback - Callback function
+     */
+    onReconnected(callback) {
+        this.callbacks.onReconnected = callback;
+    }
+    
+    /**
+     * Set callback for when reconnection fails after all attempts
+     * @param {function} callback - Callback function
+     */
+    onReconnectFailed(callback) {
+        this.callbacks.onReconnectFailed = callback;
+    }
 
     /**
      * Close the connection and clean up
      */
     closeConnection() {
+        // Set manual disconnect flag to prevent auto-reconnect
+        this.manualDisconnect = true;
+        
+        // Clear ping interval
+        if (this.pingInterval) {
+            clearInterval(this.pingInterval);
+            this.pingInterval = null;
+        }
+        
+        // Close connection
         if (this.connection) {
             this.connection.close();
+            this.connection = null;
         }
+        
+        // Destroy peer
         if (this.peer) {
             this.peer.destroy();
+            this.peer = null;
         }
+        
+        console.log('Connection resources cleaned up');
+    }
+    
+    /**
+     * Attempt to reconnect to the peer
+     * @param {Error} [error] - The error that caused the reconnection attempt
+     */
+    attemptReconnect(error) {
+        // If already reconnecting, don't start another attempt
+        if (this.isReconnecting) {
+            return;
+        }
+        
+        this.isReconnecting = true;
+        this.reconnectAttempts++;
+        
+        // Notify about reconnection attempt
+        console.log(`Reconnection attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
+        if (this.callbacks.onReconnecting) {
+            this.callbacks.onReconnecting(this.reconnectAttempts, this.maxReconnectAttempts);
+        }
+        
+        // If error was provided, notify about it
+        if (error && this.callbacks.onConnectionError) {
+            this.callbacks.onConnectionError(error);
+        }
+        
+        // If we've exceeded max attempts, give up
+        if (this.reconnectAttempts > this.maxReconnectAttempts) {
+            console.error('Max reconnection attempts reached');
+            this.isReconnecting = false;
+            
+            if (this.callbacks.onReconnectFailed) {
+                this.callbacks.onReconnectFailed();
+            }
+            
+            if (this.callbacks.onConnectionClosed) {
+                this.callbacks.onConnectionClosed();
+            }
+            
+            return;
+        }
+        
+        // Wait before attempting to reconnect (exponential backoff)
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 10000);
+        
+        setTimeout(() => {
+            console.log('Attempting to reconnect...');
+            
+            // Reinitialize peer if needed
+            if (!this.peer || this.peer.destroyed) {
+                this.initializePeer();
+            }
+            
+            // Attempt to reconnect based on role
+            if (this.isHost) {
+                // Host just needs to wait for new connections
+                this.isReconnecting = false;
+                
+                // Reset reconnect attempts if successful
+                if (this.callbacks.onReconnected) {
+                    this.callbacks.onReconnected();
+                }
+            } else {
+                // Guest needs to reconnect to the host
+                this.joinRoom(this.roomCode, this.guestName, this.guestGender);
+                
+                // Check if connection was established after a short delay
+                setTimeout(() => {
+                    if (this.isConnected()) {
+                        console.log('Reconnection successful');
+                        this.isReconnecting = false;
+                        this.reconnectAttempts = 0;
+                        
+                        if (this.callbacks.onReconnected) {
+                            this.callbacks.onReconnected();
+                        }
+                    } else {
+                        console.log('Reconnection failed, trying again');
+                        this.isReconnecting = false;
+                        this.attemptReconnect();
+                    }
+                }, 5000); // Give 5 seconds to establish connection
+            }
+        }, delay);
     }
 
     /**

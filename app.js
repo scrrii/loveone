@@ -200,6 +200,11 @@ document.addEventListener('DOMContentLoaded', () => {
         gameConnection.onConnectionEstablished((data) => {
             console.log('Connection established:', data);
             
+            // Hide any reconnection messages
+            if (document.getElementById('reconnecting-message')) {
+                document.getElementById('reconnecting-message').style.display = 'none';
+            }
+            
             // Update partner info
             if (data.isHost) {
                 gameState.guestName = gameConnection.getPartnerName();
@@ -251,12 +256,75 @@ document.addEventListener('DOMContentLoaded', () => {
                 userMessage += '\n\nPossible reasons:\n' +
                     '- The room code may be incorrect\n' +
                     '- The host may have left or closed the room\n' +
-                    '- There might be network connectivity issues';
+                    '- There might be network connectivity issues\n' +
+                    '- You may be behind a restrictive firewall or NAT';
             }
             
-            alert(userMessage);
+            // Only show alert if not reconnecting
+            if (!gameConnection.isReconnecting) {
+                alert(userMessage);
+                
+                // Return to welcome screen if not reconnecting
+                showScreen('welcome');
+            }
+        });
+        
+        // When reconnection attempt starts
+        gameConnection.onReconnecting((attempt, maxAttempts) => {
+            console.log(`Reconnection attempt ${attempt}/${maxAttempts}`);
             
-            // Return to welcome screen
+            // Create or update reconnection message
+            let reconnectingMessage = document.getElementById('reconnecting-message');
+            if (!reconnectingMessage) {
+                reconnectingMessage = document.createElement('div');
+                reconnectingMessage.id = 'reconnecting-message';
+                reconnectingMessage.className = 'reconnecting-overlay';
+                document.body.appendChild(reconnectingMessage);
+            }
+            
+            reconnectingMessage.innerHTML = `
+                <div class="reconnecting-content">
+                    <div class="loader"></div>
+                    <p>Connection lost. Reconnecting... (${attempt}/${maxAttempts})</p>
+                </div>
+            `;
+            reconnectingMessage.style.display = 'flex';
+        });
+        
+        // When reconnection is successful
+        gameConnection.onReconnected(() => {
+            console.log('Reconnection successful');
+            
+            // Hide reconnection message
+            const reconnectingMessage = document.getElementById('reconnecting-message');
+            if (reconnectingMessage) {
+                reconnectingMessage.style.display = 'none';
+            }
+            
+            // Show success message
+            const successMessage = document.createElement('div');
+            successMessage.className = 'reconnection-success';
+            successMessage.textContent = 'Connection restored!';
+            document.body.appendChild(successMessage);
+            
+            // Remove success message after a few seconds
+            setTimeout(() => {
+                document.body.removeChild(successMessage);
+            }, 3000);
+        });
+        
+        // When reconnection fails after all attempts
+        gameConnection.onReconnectFailed(() => {
+            console.log('Reconnection failed after all attempts');
+            
+            // Hide reconnection message
+            const reconnectingMessage = document.getElementById('reconnecting-message');
+            if (reconnectingMessage) {
+                reconnectingMessage.style.display = 'none';
+            }
+            
+            // Show failure message and return to welcome screen
+            alert('Could not reconnect to your partner after multiple attempts. Please try again later.');
             showScreen('welcome');
         });
     }
